@@ -1,0 +1,6 @@
+cell8-psdemortr1
+cell8-psdemorou1
+AlphaBits_F
+AlphaBits_K
+East_S1
+totally-fake-device-xyz
