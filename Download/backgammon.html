@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2a1a0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Backgammon</title>
+<style>
+  :root{
+    --bg:#1b120b; --panel:#2a1a0e; --text:#f3e6d0; --muted:#bfa98a;
+    --accent:#e0a33a; --btn:#4a2f19; --btnText:#f3e6d0;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    touch-action:manipulation;-webkit-user-select:none;user-select:none;overscroll-behavior:none}
+  #app{max-width:900px;margin:0 auto;padding:10px 8px calc(14px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;gap:8px;min-height:100%}
+  header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  h1{font-size:18px;margin:0;letter-spacing:.5px}
+  .score{display:flex;gap:10px;font-size:14px;color:var(--muted);align-items:center}
+  .chip{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin-right:4px;border:1px solid #0006}
+  .chip.w{background:#f5ecd9}.chip.b{background:#7a1414}
+  #status{background:var(--panel);border-radius:10px;padding:10px 12px;font-size:16px;min-height:44px;
+    display:flex;align-items:center;justify-content:space-between;gap:8px}
+  #status .who{font-weight:700}
+  #status .pips{font-size:12px;color:var(--muted);text-align:right;white-space:nowrap}
+  #boardWrap{width:100%;display:flex;justify-content:center}
+  svg{width:100%;height:auto;max-height:68vh;display:block;border-radius:10px}
+  #controls{display:flex;gap:8px}
+  button{flex:1;font-size:18px;font-weight:700;padding:14px 10px;border-radius:12px;border:none;
+    background:var(--btn);color:var(--btnText);box-shadow:0 2px 0 #0008}
+  button.primary{background:var(--accent);color:#2a1a0e}
+  button:disabled{opacity:.35}
+  button:active:not(:disabled){transform:translateY(1px)}
+  .small{flex:0 0 auto;font-size:13px;padding:8px 10px;border-radius:9px;font-weight:600}
+  #help{font-size:12px;color:var(--muted);line-height:1.45;margin:2px 4px}
+  .hit{cursor:pointer}
+  #overlay{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:20px;z-index:5}
+  #overlay .card{background:var(--panel);border-radius:16px;padding:22px;max-width:340px;width:100%;text-align:center}
+  #overlay h2{margin:0 0 8px}
+  #overlay p{color:var(--muted);margin:0 0 16px}
+  #overlay .row{display:flex;gap:8px}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Backgammon</h1>
+    <div class="score">
+      <span><span class="chip w"></span><b id="scW">0</b></span>
+      <span><span class="chip b"></span><b id="scB">0</b></span>
+      <button class="small" id="newBtn">New</button>
+    </div>
+  </header>
+  <div id="status"><div id="msg"></div><div class="pips" id="pips"></div></div>
+  <div id="boardWrap"><svg id="board" viewBox="0 0 600 480" preserveAspectRatio="xMidYMid meet"></svg></div>
+  <div id="controls">
+    <button id="undoBtn">Undo</button>
+    <button id="mainBtn" class="primary">Roll</button>
+  </div>
+  <div id="help">Tap a checker to select it, then tap a highlighted point (or the tray on the right to bear off). White moves counter‑clockwise toward the bottom‑right; Red moves toward the top‑right. Tap <b>Done</b> to pass the phone.</div>
+</div>
+<div id="overlay"><div class="card"><h2 id="ovTitle"></h2><p id="ovText"></p><div class="row" id="ovRow"></div></div></div>
+
+<script>
+(function(){
+"use strict";
+// ---------- Geometry ----------
+const W=600,H=480,M=10,PW=40,BAR=40,TRAY=50,PH=190,R=18;
+const LEFT0=M, RIGHT0=M+6*PW+BAR, BAR_X=M+6*PW, TRAY_X=RIGHT0+6*PW+M;
+const NAME={w:'White',b:'Red'};
+const other=p=>p==='w'?'b':'w';
+
+// ---------- Position helpers ----------
+// pts[1..24]: positive = White checkers, negative = Red checkers
+function initialPos(){
+  const pts=new Array(25).fill(0);
+  pts[24]=2;pts[13]=5;pts[8]=3;pts[6]=5;
+  pts[1]=-2;pts[12]=-5;pts[17]=-3;pts[19]=-5;
+  return {pts,bar:{w:0,b:0},off:{w:0,b:0}};
+}
+const clone=pos=>({pts:pos.pts.slice(),bar:{...pos.bar},off:{...pos.off}});
+const cnt=(pos,p,pt)=>{const v=pos.pts[pt];return p==='w'?(v>0?v:0):(v<0?-v:0)};
+function allHome(pos,p){
+  if(pos.bar[p])return false;
+  if(p==='w'){for(let i=7;i<=24;i++)if(pos.pts[i]>0)return false;}
+  else{for(let i=1;i<=18;i++)if(pos.pts[i]<0)return false;}
+  return true;
+}
+const open=(pos,p,to)=>cnt(pos,other(p),to)<=1;
+function singleMoves(pos,p,d){
+  const res=[];
+  if(pos.bar[p]>0){
+    const to=p==='w'?25-d:d;
+    if(open(pos,p,to))res.push({from:'bar',to,die:d});
+    return res;
+  }
+  const home=allHome(pos,p);
+  for(let pt=1;pt<=24;pt++){
+    if(!cnt(pos,p,pt))continue;
+    const to=p==='w'?pt-d:pt+d;
+    if(to>=1&&to<=24){ if(open(pos,p,to))res.push({from:pt,to,die:d}); }
+    else if(home){
+      const dist=p==='w'?pt:25-pt;
+      if(dist===d)res.push({from:pt,to:'off',die:d});
+      else if(dist<d){
+        let farther=false;
+        if(p==='w'){for(let i=pt+1;i<=6;i++)if(pos.pts[i]>0){farther=true;break;}}
+        else{for(let i=19;i<pt;i++)if(pos.pts[i]<0){farther=true;break;}}
+        if(!farther)res.push({from:pt,to:'off',die:d});
+      }
+    }
+  }
+  return res;
+}
+function apply(pos,p,m){
+  const n=clone(pos),s=p==='w'?1:-1;
+  if(m.from==='bar')n.bar[p]--; else n.pts[m.from]-=s;
+  if(m.to==='off')n.off[p]++;
+  else{
+    if(cnt(n,other(p),m.to)===1){n.pts[m.to]=0;n.bar[other(p)]++;}
+    n.pts[m.to]+=s;
+  }
+  return n;
+}
+// All legal move sequences, enforcing "use as many dice as possible" and "use the larger die if only one can be used".
+function genSeqs(pos,p,dice){
+  const out=[];
+  (function rec(pos,dice,seq){
+    let any=false;const tried={};
+    for(let i=0;i<dice.length;i++){
+      const d=dice[i];if(tried[d])continue;tried[d]=1;
+      const rest=dice.slice(0,i).concat(dice.slice(i+1));
+      for(const m of singleMoves(pos,p,d)){any=true;rec(apply(pos,p,m),rest,seq.concat([m]));}
+    }
+    if(!any)out.push(seq);
+  })(pos,dice,[]);
+  let max=0;for(const s of out)if(s.length>max)max=s.length;
+  let res=out.filter(s=>s.length===max);
+  if(max===1&&dice.length===2&&dice[0]!==dice[1]){
+    const hi=Math.max(dice[0],dice[1]);
+    if(res.some(s=>s[0].die===hi))res=res.filter(s=>s[0].die===hi);
+  }
+  return res;
+}
+const same=(a,b)=>a.from===b.from&&a.to===b.to&&a.die===b.die;
+function pips(pos,p){
+  let s=pos.bar[p]*25;
+  for(let i=1;i<=24;i++)s+=cnt(pos,p,i)*(p==='w'?i:25-i);
+  return s;
+}
+
+// ---------- State ----------
+let S, seqCache=null, selected=null;
+function fresh(score){
+  return {pos:initialPos(),turn:'w',phase:'opening',dice:[],made:[],score:score||{w:0,b:0},opening:null,winner:null,winPts:0,note:''};
+}
+function save(){try{localStorage.setItem('bg2p',JSON.stringify(S));}catch(e){}}
+function load(){try{const t=localStorage.getItem('bg2p');if(t){const o=JSON.parse(t);if(o&&o.pos&&o.pos.pts)return o;}}catch(e){}return null;}
+
+function cur(){let p=S.pos;for(const m of S.made)p=apply(p,S.turn,m);return p;}
+function seqs(){
+  if(!seqCache)seqCache=genSeqs(S.pos,S.turn,S.dice);
+  const k=S.made.length;
+  return seqCache.filter(s=>{for(let i=0;i<k;i++)if(!s[i]||!same(s[i],S.made[i]))return false;return true;});
+}
+function nextMoves(){
+  const k=S.made.length,res=[];
+  for(const s of seqs()){const m=s[k];if(m&&!res.some(x=>same(x,m)))res.push(m);}
+  return res;
+}
+function remainingDice(){
+  const r=S.dice.slice();
+  for(const m of S.made){const i=r.indexOf(m.die);if(i>=0)r.splice(i,1);}
+  return r;
+}
+const rollDie=()=>{
+  if(window.crypto&&crypto.getRandomValues){const a=new Uint32Array(1);
+    do{crypto.getRandomValues(a);}while(a[0]>=4294967292);return 1+(a[0]%6);}
+  return 1+Math.floor(Math.random()*6);
+};
+
+// ---------- Actions ----------
+function doOpening(){
+  const w=rollDie(),b=rollDie();
+  S.opening={w,b};
+  if(w===b){S.note=`Both rolled ${w} — roll again.`;}
+  else{
+    S.turn=w>b?'w':'b';
+    S.dice=[w,b].sort((x,y)=>y-x);
+    S.phase='move';S.made=[];seqCache=null;
+    S.note=`White ${w}, Red ${b} — ${NAME[S.turn]} starts.`;
+  }
+  afterChange();
+}
+function doRoll(){
+  const a=rollDie(),b=rollDie();
+  S.dice=a===b?[a,a,a,a]:[Math.max(a,b),Math.min(a,b)];
+  S.phase='move';S.made=[];S.opening=null;S.note='';seqCache=null;
+  afterChange();
+}
+function doMove(m){
+  S.made.push(m);selected=null;
+  const pos=cur();
+  if(pos.off[S.turn]===15){
+    const loser=other(S.turn);let pts=1;
+    if(pos.off[loser]===0){
+      pts=2;
+      let inHome=pos.bar[loser]>0;
+      for(let i=1;i<=24;i++){
+        const homeOfWinner=S.turn==='w'?i<=6:i>=19;
+        if(homeOfWinner&&cnt(pos,loser,i))inHome=true;
+      }
+      if(inHome)pts=3;
+    }
+    S.winner=S.turn;S.winPts=pts;S.score[S.turn]+=pts;S.phase='over';
+    S.pos=pos;S.made=[];S.dice=[];seqCache=null;
+  }
+  afterChange();
+  if(S.phase==='over')showWin();
+}
+function doUndo(){if(S.made.length){S.made.pop();selected=null;afterChange();}}
+function endTurn(){
+  S.pos=cur();S.made=[];S.dice=[];seqCache=null;selected=null;
+  S.turn=other(S.turn);S.phase='roll';S.note='';
+  afterChange();
+}
+function afterChange(){
+  if(S.phase==='move'){
+    const pos=cur();
+    if(pos.bar[S.turn]>0&&nextMoves().length)selected='bar';
+  }
+  save();render();
+}
+
+// ---------- Input ----------
+function onTap(target){
+  if(S.phase==='opening'){doOpening();return;}
+  if(S.phase==='roll'){doRoll();return;}
+  if(S.phase!=='move')return;
+  const moves=nextMoves();
+  if(selected!==null){
+    const opts=moves.filter(m=>m.from===selected&&m.to===target);
+    if(opts.length){opts.sort((a,b)=>a.die-b.die);doMove(opts[0]);return;}
+  }
+  if(target!=='off'&&target!=='dice'&&moves.some(m=>m.from===target)){
+    selected=(selected===target)?null:target;
+    // auto-move if only one destination and it's a single option? keep explicit, but allow double-tap feel:
+    render();return;
+  }
+  if(cur().bar[S.turn]>0)return;
+  selected=null;render();
+}
+
+// ---------- Rendering ----------
+function pointX(pt){ // left edge
+  let col,top;
+  if(pt>=13){col=pt-13;top=true;}else{col=12-pt;top=false;}
+  return {x:M+col*PW+(col>=6?BAR:0),top};
+}
+function checker(cx,cy,p,extra){
+  const fill=p==='w'?'url(#gw)':'url(#gb)',stroke=p==='w'?'#8a7556':'#2b0505';
+  return `<circle cx="${cx}" cy="${cy}" r="${R}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`+
+    `<circle cx="${cx}" cy="${cy}" r="${R-6}" fill="none" stroke="${p==='w'?'#0002':'#fff2'}" stroke-width="1.5"/>`+(extra||'');
+}
+function die(x,y,v,size,faded,color){
+  const s=size,r=s*0.09,pip=s*0.1;
+  const P={1:[[.5,.5]],2:[[.25,.25],[.75,.75]],3:[[.25,.25],[.5,.5],[.75,.75]],
+    4:[[.25,.25],[.75,.25],[.25,.75],[.75,.75]],5:[[.25,.25],[.75,.25],[.5,.5],[.25,.75],[.75,.75]],
+    6:[[.25,.25],[.75,.25],[.25,.5],[.75,.5],[.25,.75],[.75,.75]]}[v];
+  const body=color==='b'?'#8c1a1a':'#fbf6ea',dot=color==='b'?'#fbf6ea':'#222';
+  let g=`<g opacity="${faded?0.3:1}"><rect x="${x}" y="${y}" width="${s}" height="${s}" rx="${s*0.18}" fill="${body}" stroke="#0007" stroke-width="1.5"/>`;
+  for(const [a,b] of P)g+=`<circle cx="${x+a*s}" cy="${y+b*s}" r="${pip}" fill="${dot}"/>`;
+  return g+'</g>';
+}
+function render(){
+  const svg=document.getElementById('board');
+  const pos=S.phase==='move'?cur():S.pos;
+  const moves=S.phase==='move'?nextMoves():[];
+  const movable=new Set(moves.map(m=>m.from));
+  const targets=new Set(selected!==null?moves.filter(m=>m.from===selected).map(m=>m.to):[]);
+  const lastTo=S.made.length?S.made[S.made.length-1].to:null;
+  let g='';
+  g+=`<defs>
+    <radialGradient id="gw" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fffdf6"/><stop offset="1" stop-color="#d9ccb0"/></radialGradient>
+    <radialGradient id="gb" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#c73a3a"/><stop offset="1" stop-color="#5e0c0c"/></radialGradient>
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7a4a24"/><stop offset="1" stop-color="#4e2c13"/></linearGradient>
+  </defs>`;
+  g+=`<rect x="0" y="0" width="${W}" height="${H}" rx="12" fill="url(#wood)"/>`;
+  g+=`<rect x="${LEFT0}" y="${M}" width="${6*PW}" height="${H-2*M}" fill="#1e4a33"/>`;
+  g+=`<rect x="${RIGHT0}" y="${M}" width="${6*PW}" height="${H-2*M}" fill="#1e4a33"/>`;
+  g+=`<rect x="${TRAY_X}" y="${M}" width="${TRAY}" height="${H-2*M}" rx="4" fill="#2d1a0b"/>`;
+  g+=`<rect x="${TRAY_X}" y="${H/2-1}" width="${TRAY}" height="2" fill="#7a4a24"/>`;
+  // points
+  for(let pt=1;pt<=24;pt++){
+    const {x,top}=pointX(pt);
+    const color=(pt%2===0)?'#d8b27a':'#9c2f22';
+    const y0=top?M:H-M,y1=top?M+PH:H-M-PH;
+    g+=`<polygon points="${x+1},${y0} ${x+PW-1},${y0} ${x+PW/2},${y1}" fill="${color}"/>`;
+    if(targets.has(pt))g+=`<polygon points="${x+1},${y0} ${x+PW-1},${y0} ${x+PW/2},${y1}" fill="#ffd54a" opacity=".55"/>`;
+    const lbl=S.turn==='b'&&S.phase!=='opening'?25-pt:pt;
+    g+=`<text x="${x+PW/2}" y="${top?y1+14:y1-6}" font-size="10" fill="#ffffff55" text-anchor="middle">${lbl}</text>`;
+  }
+  // checkers on points
+  for(let pt=1;pt<=24;pt++){
+    const v=pos.pts[pt];if(!v)continue;
+    const p=v>0?'w':'b',n=Math.abs(v);
+    const {x,top}=pointX(pt);const cx=x+PW/2;
+    const step=n>5?(PH-2*R)/(n-1):2*R;
+    for(let k=0;k<n;k++){
+      const cy=top?M+R+k*step:H-M-R-k*step;
+      let extra='';
+      if(k===n-1){
+        if(selected===pt)extra=`<circle cx="${cx}" cy="${cy}" r="${R+2}" fill="none" stroke="#ffd54a" stroke-width="4"/>`;
+        else if(movable.has(pt))extra=`<circle cx="${cx}" cy="${cy}" r="${R+1}" fill="none" stroke="#7fe08a" stroke-width="2.5"/>`;
+        else if(lastTo===pt)extra=`<circle cx="${cx}" cy="${cy}" r="${4}" fill="#ffd54a"/>`;
+      }
+      g+=checker(cx,cy,p,extra);
+    }
+    if(n>5){const cy=top?M+R+(n-1)*step:H-M-R-(n-1)*step;
+      g+=`<text x="${cx}" y="${cy+5}" font-size="15" font-weight="700" text-anchor="middle" fill="${p==='w'?'#333':'#fff'}">${n}</text>`;}
+  }
+  // bar
+  const bx=BAR_X+BAR/2;
+  for(const p of ['w','b']){
+    const n=pos.bar[p];if(!n)continue;
+    const step=Math.min(2*R,(H/2-40-2*R)/Math.max(1,n-1));
+    for(let k=0;k<n;k++){
+      const cy=p==='w'?H/2-30-R-k*step:H/2+30+R+k*step;
+      let extra='';
+      if(k===n-1&&S.turn===p&&S.phase==='move'){
+        if(selected==='bar')extra=`<circle cx="${bx}" cy="${cy}" r="${R+2}" fill="none" stroke="#ffd54a" stroke-width="4"/>`;
+        else if(movable.has('bar'))extra=`<circle cx="${bx}" cy="${cy}" r="${R+1}" fill="none" stroke="#7fe08a" stroke-width="2.5"/>`;
+      }
+      g+=checker(bx,cy,p,extra);
+    }
+    if(n>1){const cy=p==='w'?H/2-30-R-(n-1)*step:H/2+30+R+(n-1)*step;
+      g+=`<text x="${bx}" y="${cy+5}" font-size="15" font-weight="700" text-anchor="middle" fill="${p==='w'?'#333':'#fff'}">${n}</text>`;}
+  }
+  // borne off (White bottom tray, Red top tray)
+  if(targets.has('off')){
+    const ty=S.turn==='w'?H/2+2:M;
+    g+=`<rect x="${TRAY_X+2}" y="${ty}" width="${TRAY-4}" height="${H/2-M-2}" rx="4" fill="#ffd54a" opacity=".5"/>`;
+  }
+  for(const p of ['w','b']){
+    const n=pos.off[p];
+    for(let k=0;k<n;k++){
+      const y=p==='w'?H-M-4-(k+1)*12:M+4+k*12;
+      g+=`<rect x="${TRAY_X+6}" y="${y}" width="${TRAY-12}" height="10" rx="3" fill="${p==='w'?'#efe4cc':'#8c1a1a'}" stroke="#0007"/>`;
+    }
+    if(n)g+=`<text x="${TRAY_X+TRAY/2}" y="${p==='w'?H/2+22:H/2-12}" font-size="14" font-weight="700" fill="#f3e6d0" text-anchor="middle">${n}</text>`;
+  }
+  // dice
+  const cy=H/2;
+  if(S.phase==='opening'&&S.opening){
+    g+=die(LEFT0+3*PW-20,cy-20,S.opening.w,40,false,'w');
+    g+=die(RIGHT0+3*PW-20,cy-20,S.opening.b,40,false,'b');
+  }else if(S.phase==='move'){
+    const rem=remainingDice().slice();
+    const isD=S.dice.length===4,size=isD?32:40,gap=8;
+    const total=S.dice.length*size+(S.dice.length-1)*gap;
+    let x=RIGHT0+3*PW-total/2;
+    const used=S.dice.map(()=>true);
+    for(const d of rem){const i=S.dice.findIndex((v,j)=>v===d&&used[j]);if(i>=0)used[i]=false;}
+    S.dice.forEach((d,i)=>{g+=die(x,cy-size/2,d,size,used[i],S.turn);x+=size+gap;});
+  }else if(S.phase==='roll'||S.phase==='opening'){
+    const x0=(S.phase==='opening'||S.turn==='w')?RIGHT0:RIGHT0;
+    g+=`<text x="${x0+3*PW}" y="${cy+6}" font-size="17" font-weight="700" fill="#ffffffcc" text-anchor="middle">Tap to roll</text>`;
+  }
+  // turn indicator on bar
+  if(S.phase!=='over'&&S.phase!=='opening'){
+    g+=`<circle cx="${bx}" cy="${cy}" r="9" fill="${S.turn==='w'?'#f5ecd9':'#a32222'}" stroke="#000a" stroke-width="1.5"/>`;
+  }
+  // hit areas
+  for(let pt=1;pt<=24;pt++){
+    const {x,top}=pointX(pt);
+    g+=`<rect class="hit" data-t="${pt}" x="${x}" y="${top?M:H/2}" width="${PW}" height="${H/2-M}" fill="transparent"/>`;
+  }
+  g+=`<rect class="hit" data-t="bar" x="${BAR_X}" y="${M}" width="${BAR}" height="${H-2*M}" fill="transparent"/>`;
+  g+=`<rect class="hit" data-t="off" x="${TRAY_X}" y="${M}" width="${TRAY}" height="${H-2*M}" fill="transparent"/>`;
+  svg.innerHTML=g;
+
+  // status + buttons
+  const msg=document.getElementById('msg'),main=document.getElementById('mainBtn'),undo=document.getElementById('undoBtn');
+  const who=`<span class="chip ${S.turn}"></span><span class="who">${NAME[S.turn]}</span>`;
+  undo.disabled=!(S.phase==='move'&&S.made.length);
+  if(S.phase==='opening'){
+    msg.innerHTML=S.note||'Each player rolls one die — high roll starts.';
+    main.textContent='Roll to start';main.disabled=false;main.className='primary';
+  }else if(S.phase==='roll'){
+    msg.innerHTML=`${who} — roll the dice`;
+    main.textContent='Roll';main.disabled=false;main.className='primary';
+  }else if(S.phase==='move'){
+    const left=moves.length?(seqs()[0].length-S.made.length):0;
+    if(moves.length){
+      msg.innerHTML=`${who} — ${left} move${left>1?'s':''} left${S.note?`<br><small style="color:var(--muted)">${S.note}</small>`:''}`;
+      main.textContent='Done';main.disabled=true;main.className='';
+    }else{
+      msg.innerHTML=S.made.length?`${who} — turn complete`:`${who} — no legal moves`;
+      main.textContent=S.made.length?'Done':'Pass';main.disabled=false;main.className='primary';
+    }
+  }else if(S.phase==='over'){
+    msg.innerHTML=`<span class="chip ${S.winner}"></span><span class="who">${NAME[S.winner]} wins!</span>`;
+    main.textContent='Next game';main.disabled=false;main.className='primary';
+  }
+  const pw=pips(pos,'w'),pb=pips(pos,'b');
+  document.getElementById('pips').innerHTML=`Pips<br>W ${pw} · R ${pb}`;
+  document.getElementById('scW').textContent=S.score.w;
+  document.getElementById('scB').textContent=S.score.b;
+}
+
+// ---------- Overlay ----------
+function overlay(title,text,buttons){
+  document.getElementById('ovTitle').textContent=title;
+  document.getElementById('ovText').textContent=text;
+  const row=document.getElementById('ovRow');row.innerHTML='';
+  buttons.forEach(([label,fn,primary])=>{
+    const b=document.createElement('button');b.textContent=label;if(primary)b.className='primary';
+    b.onclick=()=>{document.getElementById('overlay').style.display='none';fn&&fn();};
+    row.appendChild(b);
+  });
+  document.getElementById('overlay').style.display='flex';
+}
+function showWin(){
+  const kind=S.winPts===3?'Backgammon!':S.winPts===2?'Gammon!':'Single game';
+  overlay(`${NAME[S.winner]} wins!`,`${kind} (+${S.winPts}). Score — White ${S.score.w}, Red ${S.score.b}.`,
+    [['View board',null,false],['Next game',newGame,true]]);
+}
+function newGame(){S=fresh(S.score);seqCache=null;selected=null;save();render();}
+
+// ---------- Wire up ----------
+document.getElementById('board').addEventListener('click',e=>{
+  const t=e.target.closest('[data-t]');
+  if(!t){onTap(null);return;}
+  const v=t.getAttribute('data-t');
+  onTap(v==='bar'||v==='off'?v:parseInt(v,10));
+});
+document.getElementById('mainBtn').addEventListener('click',()=>{
+  if(S.phase==='opening')doOpening();
+  else if(S.phase==='roll')doRoll();
+  else if(S.phase==='move'&&!nextMoves().length)endTurn();
+  else if(S.phase==='over')newGame();
+});
+document.getElementById('undoBtn').addEventListener('click',doUndo);
+document.getElementById('newBtn').addEventListener('click',()=>{
+  overlay('New game?','Start over? The current game will be lost.',[
+    ['Cancel',null,false],
+    ['New game',()=>{S=fresh(S.score);seqCache=null;selected=null;save();render();},true],
+    ['Reset score',()=>{S=fresh();seqCache=null;selected=null;save();render();},false]
+  ]);
+});
+
+S=load()||fresh();
+if(S.phase==='move'&&cur().bar[S.turn]>0)selected='bar';
+render();
+})();
+</script>
+</body>
+</html>
